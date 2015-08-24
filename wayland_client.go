@@ -2,10 +2,6 @@
 // and should not be changed manually.
 package wayland
 
-import (
-	"os"
-)
-
 const (
 	DisplayErrorInvalidObject = 0
 	DisplayErrorInvalidMethod = 1
@@ -184,23 +180,32 @@ type DisplayErrorEvent struct {
 	Message  string
 }
 
+type DisplayDeleteIdEvent struct {
+	Id uint32
+}
+
 type Display struct {
 	BaseProxy
-	ErrorChan    chan<- DisplayErrorEvent
-	DeleteIdChan chan<- uint32
-	context      *connection
+	ErrorChan    chan DisplayErrorEvent
+	DeleteIdChan chan DisplayDeleteIdEvent
+}
+
+func NewDisplay(c *Connection) *Display {
+	ret := &Display{}
+	ret.ErrorChan = make(chan DisplayErrorEvent, 0)
+	ret.DeleteIdChan = make(chan DisplayDeleteIdEvent, 0)
+	c.Register(ret)
+	return ret
 }
 
 func (p *Display) Sync() (*Callback, error) {
-	ret := Callback{}
-	Proxy(p).GetDisplay().Register(&ret)
-	return &ret, Proxy(p).GetDisplay().SendRequest(p, 0)
+	ret := NewCallback(p.Connection())
+	return ret, p.Connection().SendRequest(p, 0, Proxy(ret))
 }
 
 func (p *Display) GetRegistry() (*Registry, error) {
-	ret := Registry{}
-	Proxy(p).GetDisplay().Register(&ret)
-	return &ret, Proxy(p).GetDisplay().SendRequest(p, 1)
+	ret := NewRegistry(p.Connection())
+	return ret, p.Connection().SendRequest(p, 1, Proxy(ret))
 }
 
 type RegistryGlobalEvent struct {
@@ -209,64 +214,106 @@ type RegistryGlobalEvent struct {
 	Version uint32
 }
 
-type Registry struct {
-	BaseProxy
-	GlobalChan       chan<- RegistryGlobalEvent
-	GlobalRemoveChan chan<- uint32
+type RegistryGlobalRemoveEvent struct {
+	Name uint32
 }
 
-func (p *Registry) Bind(name uint32, id Proxy) error {
-	return Proxy(p).GetDisplay().SendRequest(p, 0, name, id)
+type Registry struct {
+	BaseProxy
+	GlobalChan       chan RegistryGlobalEvent
+	GlobalRemoveChan chan RegistryGlobalRemoveEvent
+}
+
+func NewRegistry(c *Connection) *Registry {
+	ret := &Registry{}
+	ret.GlobalChan = make(chan RegistryGlobalEvent, 0)
+	ret.GlobalRemoveChan = make(chan RegistryGlobalRemoveEvent, 0)
+	c.Register(ret)
+	return ret
+}
+
+func (p *Registry) Bind(name uint32, ifc string, version uint32, id Proxy) error {
+	return p.Connection().SendRequest(p, 0, name, ifc, version, id)
+}
+
+type CallbackDoneEvent struct {
+	CallbackData uint32
 }
 
 type Callback struct {
 	BaseProxy
-	DoneChan chan<- uint32
+	DoneChan chan CallbackDoneEvent
+}
+
+func NewCallback(c *Connection) *Callback {
+	ret := &Callback{}
+	ret.DoneChan = make(chan CallbackDoneEvent, 0)
+	c.Register(ret)
+	return ret
 }
 
 type Compositor struct {
 	BaseProxy
 }
 
+func NewCompositor(c *Connection) *Compositor {
+	ret := &Compositor{}
+	c.Register(ret)
+	return ret
+}
+
 func (p *Compositor) CreateSurface() (*Surface, error) {
-	ret := Surface{}
-	Proxy(p).GetDisplay().Register(&ret)
-	return &ret, Proxy(p).GetDisplay().SendRequest(p, 0)
+	ret := NewSurface(p.Connection())
+	return ret, p.Connection().SendRequest(p, 0, Proxy(ret))
 }
 
 func (p *Compositor) CreateRegion() (*Region, error) {
-	ret := Region{}
-	Proxy(p).GetDisplay().Register(&ret)
-	return &ret, Proxy(p).GetDisplay().SendRequest(p, 1)
+	ret := NewRegion(p.Connection())
+	return ret, p.Connection().SendRequest(p, 1, Proxy(ret))
 }
 
 type ShmPool struct {
 	BaseProxy
 }
 
-func (p *ShmPool) CreateBuffer(offset int, width int, height int, stride int, format uint32) (*Buffer, error) {
-	ret := Buffer{}
-	Proxy(p).GetDisplay().Register(&ret)
-	return &ret, Proxy(p).GetDisplay().SendRequest(p, 0, offset, width, height, stride, format)
+func NewShmPool(c *Connection) *ShmPool {
+	ret := &ShmPool{}
+	c.Register(ret)
+	return ret
+}
+
+func (p *ShmPool) CreateBuffer(offset int32, width int32, height int32, stride int32, format uint32) (*Buffer, error) {
+	ret := NewBuffer(p.Connection())
+	return ret, p.Connection().SendRequest(p, 0, Proxy(ret), offset, width, height, stride, format)
 }
 
 func (p *ShmPool) Destroy() error {
-	return Proxy(p).GetDisplay().SendRequest(p, 1)
+	return p.Connection().SendRequest(p, 1)
 }
 
-func (p *ShmPool) Resize(size int) error {
-	return Proxy(p).GetDisplay().SendRequest(p, 2, size)
+func (p *ShmPool) Resize(size int32) error {
+	return p.Connection().SendRequest(p, 2, size)
+}
+
+type ShmFormatEvent struct {
+	Format uint32
 }
 
 type Shm struct {
 	BaseProxy
-	FormatChan chan<- uint32
+	FormatChan chan ShmFormatEvent
 }
 
-func (p *Shm) CreatePool(fd *os.File, size int) (*ShmPool, error) {
-	ret := ShmPool{}
-	Proxy(p).GetDisplay().Register(&ret)
-	return &ret, Proxy(p).GetDisplay().SendRequest(p, 0, fd, size)
+func NewShm(c *Connection) *Shm {
+	ret := &Shm{}
+	ret.FormatChan = make(chan ShmFormatEvent, 0)
+	c.Register(ret)
+	return ret
+}
+
+func (p *Shm) CreatePool(fd uintptr, size int32) (*ShmPool, error) {
+	ret := NewShmPool(p.Connection())
+	return ret, p.Connection().SendRequest(p, 0, Proxy(ret), fd, size)
 }
 
 type BufferReleaseEvent struct {
@@ -274,33 +321,55 @@ type BufferReleaseEvent struct {
 
 type Buffer struct {
 	BaseProxy
-	ReleaseChan chan<- BufferReleaseEvent
+	ReleaseChan chan BufferReleaseEvent
+}
+
+func NewBuffer(c *Connection) *Buffer {
+	ret := &Buffer{}
+	ret.ReleaseChan = make(chan BufferReleaseEvent, 0)
+	c.Register(ret)
+	return ret
 }
 
 func (p *Buffer) Destroy() error {
-	return Proxy(p).GetDisplay().SendRequest(p, 0)
+	return p.Connection().SendRequest(p, 0)
+}
+
+type DataOfferOfferEvent struct {
+	MimeType string
 }
 
 type DataOffer struct {
 	BaseProxy
-	OfferChan chan<- string
+	OfferChan chan DataOfferOfferEvent
+}
+
+func NewDataOffer(c *Connection) *DataOffer {
+	ret := &DataOffer{}
+	ret.OfferChan = make(chan DataOfferOfferEvent, 0)
+	c.Register(ret)
+	return ret
 }
 
 func (p *DataOffer) Accept(serial uint32, mimeType string) error {
-	return Proxy(p).GetDisplay().SendRequest(p, 0, serial, mimeType)
+	return p.Connection().SendRequest(p, 0, serial, mimeType)
 }
 
-func (p *DataOffer) Receive(mimeType string, fd *os.File) error {
-	return Proxy(p).GetDisplay().SendRequest(p, 1, mimeType, fd)
+func (p *DataOffer) Receive(mimeType string, fd uintptr) error {
+	return p.Connection().SendRequest(p, 1, mimeType, fd)
 }
 
 func (p *DataOffer) Destroy() error {
-	return Proxy(p).GetDisplay().SendRequest(p, 2)
+	return p.Connection().SendRequest(p, 2)
+}
+
+type DataSourceTargetEvent struct {
+	MimeType string
 }
 
 type DataSourceSendEvent struct {
 	MimeType string
-	Fd       *os.File
+	Fd       uintptr
 }
 
 type DataSourceCancelledEvent struct {
@@ -308,25 +377,38 @@ type DataSourceCancelledEvent struct {
 
 type DataSource struct {
 	BaseProxy
-	TargetChan    chan<- string
-	SendChan      chan<- DataSourceSendEvent
-	CancelledChan chan<- DataSourceCancelledEvent
+	TargetChan    chan DataSourceTargetEvent
+	SendChan      chan DataSourceSendEvent
+	CancelledChan chan DataSourceCancelledEvent
+}
+
+func NewDataSource(c *Connection) *DataSource {
+	ret := &DataSource{}
+	ret.TargetChan = make(chan DataSourceTargetEvent, 0)
+	ret.SendChan = make(chan DataSourceSendEvent, 0)
+	ret.CancelledChan = make(chan DataSourceCancelledEvent, 0)
+	c.Register(ret)
+	return ret
 }
 
 func (p *DataSource) Offer(mimeType string) error {
-	return Proxy(p).GetDisplay().SendRequest(p, 0, mimeType)
+	return p.Connection().SendRequest(p, 0, mimeType)
 }
 
 func (p *DataSource) Destroy() error {
-	return Proxy(p).GetDisplay().SendRequest(p, 1)
+	return p.Connection().SendRequest(p, 1)
+}
+
+type DataDeviceDataOfferEvent struct {
+	Id *DataOffer
 }
 
 type DataDeviceEnterEvent struct {
 	Serial  uint32
-	Surface Surface
+	Surface *Surface
 	X       float32
 	Y       float32
-	Id      DataOffer
+	Id      *DataOffer
 }
 
 type DataDeviceLeaveEvent struct {
@@ -341,58 +423,87 @@ type DataDeviceMotionEvent struct {
 type DataDeviceDropEvent struct {
 }
 
+type DataDeviceSelectionEvent struct {
+	Id *DataOffer
+}
+
 type DataDevice struct {
 	BaseProxy
-	DataOfferChan chan<- DataOffer
-	EnterChan     chan<- DataDeviceEnterEvent
-	LeaveChan     chan<- DataDeviceLeaveEvent
-	MotionChan    chan<- DataDeviceMotionEvent
-	DropChan      chan<- DataDeviceDropEvent
-	SelectionChan chan<- DataOffer
+	DataOfferChan chan DataDeviceDataOfferEvent
+	EnterChan     chan DataDeviceEnterEvent
+	LeaveChan     chan DataDeviceLeaveEvent
+	MotionChan    chan DataDeviceMotionEvent
+	DropChan      chan DataDeviceDropEvent
+	SelectionChan chan DataDeviceSelectionEvent
 }
 
-func (p *DataDevice) StartDrag(source DataSource, origin Surface, icon Surface, serial uint32) error {
-	return Proxy(p).GetDisplay().SendRequest(p, 0, source, origin, icon, serial)
+func NewDataDevice(c *Connection) *DataDevice {
+	ret := &DataDevice{}
+	ret.DataOfferChan = make(chan DataDeviceDataOfferEvent, 0)
+	ret.EnterChan = make(chan DataDeviceEnterEvent, 0)
+	ret.LeaveChan = make(chan DataDeviceLeaveEvent, 0)
+	ret.MotionChan = make(chan DataDeviceMotionEvent, 0)
+	ret.DropChan = make(chan DataDeviceDropEvent, 0)
+	ret.SelectionChan = make(chan DataDeviceSelectionEvent, 0)
+	c.Register(ret)
+	return ret
 }
 
-func (p *DataDevice) SetSelection(source DataSource, serial uint32) error {
-	return Proxy(p).GetDisplay().SendRequest(p, 1, source, serial)
+func (p *DataDevice) StartDrag(source *DataSource, origin *Surface, icon *Surface, serial uint32) error {
+	return p.Connection().SendRequest(p, 0, source, origin, icon, serial)
+}
+
+func (p *DataDevice) SetSelection(source *DataSource, serial uint32) error {
+	return p.Connection().SendRequest(p, 1, source, serial)
 }
 
 func (p *DataDevice) Release() error {
-	return Proxy(p).GetDisplay().SendRequest(p, 2)
+	return p.Connection().SendRequest(p, 2)
 }
 
 type DataDeviceManager struct {
 	BaseProxy
 }
 
-func (p *DataDeviceManager) CreateDataSource() (*DataSource, error) {
-	ret := DataSource{}
-	Proxy(p).GetDisplay().Register(&ret)
-	return &ret, Proxy(p).GetDisplay().SendRequest(p, 0)
+func NewDataDeviceManager(c *Connection) *DataDeviceManager {
+	ret := &DataDeviceManager{}
+	c.Register(ret)
+	return ret
 }
 
-func (p *DataDeviceManager) GetDataDevice(seat Seat) (*DataDevice, error) {
-	ret := DataDevice{}
-	Proxy(p).GetDisplay().Register(&ret)
-	return &ret, Proxy(p).GetDisplay().SendRequest(p, 1, seat)
+func (p *DataDeviceManager) CreateDataSource() (*DataSource, error) {
+	ret := NewDataSource(p.Connection())
+	return ret, p.Connection().SendRequest(p, 0, Proxy(ret))
+}
+
+func (p *DataDeviceManager) GetDataDevice(seat *Seat) (*DataDevice, error) {
+	ret := NewDataDevice(p.Connection())
+	return ret, p.Connection().SendRequest(p, 1, Proxy(ret), seat)
 }
 
 type Shell struct {
 	BaseProxy
 }
 
-func (p *Shell) GetShellSurface(surface Surface) (*ShellSurface, error) {
-	ret := ShellSurface{}
-	Proxy(p).GetDisplay().Register(&ret)
-	return &ret, Proxy(p).GetDisplay().SendRequest(p, 0, surface)
+func NewShell(c *Connection) *Shell {
+	ret := &Shell{}
+	c.Register(ret)
+	return ret
+}
+
+func (p *Shell) GetShellSurface(surface *Surface) (*ShellSurface, error) {
+	ret := NewShellSurface(p.Connection())
+	return ret, p.Connection().SendRequest(p, 0, Proxy(ret), surface)
+}
+
+type ShellSurfacePingEvent struct {
+	Serial uint32
 }
 
 type ShellSurfaceConfigureEvent struct {
 	Edges  uint32
-	Width  int
-	Height int
+	Width  int32
+	Height int32
 }
 
 type ShellSurfacePopupDoneEvent struct {
@@ -400,129 +511,166 @@ type ShellSurfacePopupDoneEvent struct {
 
 type ShellSurface struct {
 	BaseProxy
-	PingChan      chan<- uint32
-	ConfigureChan chan<- ShellSurfaceConfigureEvent
-	PopupDoneChan chan<- ShellSurfacePopupDoneEvent
+	PingChan      chan ShellSurfacePingEvent
+	ConfigureChan chan ShellSurfaceConfigureEvent
+	PopupDoneChan chan ShellSurfacePopupDoneEvent
+}
+
+func NewShellSurface(c *Connection) *ShellSurface {
+	ret := &ShellSurface{}
+	ret.PingChan = make(chan ShellSurfacePingEvent, 0)
+	ret.ConfigureChan = make(chan ShellSurfaceConfigureEvent, 0)
+	ret.PopupDoneChan = make(chan ShellSurfacePopupDoneEvent, 0)
+	c.Register(ret)
+	return ret
 }
 
 func (p *ShellSurface) Pong(serial uint32) error {
-	return Proxy(p).GetDisplay().SendRequest(p, 0, serial)
+	return p.Connection().SendRequest(p, 0, serial)
 }
 
-func (p *ShellSurface) Move(seat Seat, serial uint32) error {
-	return Proxy(p).GetDisplay().SendRequest(p, 1, seat, serial)
+func (p *ShellSurface) Move(seat *Seat, serial uint32) error {
+	return p.Connection().SendRequest(p, 1, seat, serial)
 }
 
-func (p *ShellSurface) Resize(seat Seat, serial uint32, edges uint32) error {
-	return Proxy(p).GetDisplay().SendRequest(p, 2, seat, serial, edges)
+func (p *ShellSurface) Resize(seat *Seat, serial uint32, edges uint32) error {
+	return p.Connection().SendRequest(p, 2, seat, serial, edges)
 }
 
 func (p *ShellSurface) SetToplevel() error {
-	return Proxy(p).GetDisplay().SendRequest(p, 3)
+	return p.Connection().SendRequest(p, 3)
 }
 
-func (p *ShellSurface) SetTransient(parent Surface, x int, y int, flags uint32) error {
-	return Proxy(p).GetDisplay().SendRequest(p, 4, parent, x, y, flags)
+func (p *ShellSurface) SetTransient(parent *Surface, x int32, y int32, flags uint32) error {
+	return p.Connection().SendRequest(p, 4, parent, x, y, flags)
 }
 
-func (p *ShellSurface) SetFullscreen(method uint32, framerate uint32, output Output) error {
-	return Proxy(p).GetDisplay().SendRequest(p, 5, method, framerate, output)
+func (p *ShellSurface) SetFullscreen(method uint32, framerate uint32, output *Output) error {
+	return p.Connection().SendRequest(p, 5, method, framerate, output)
 }
 
-func (p *ShellSurface) SetPopup(seat Seat, serial uint32, parent Surface, x int, y int, flags uint32) error {
-	return Proxy(p).GetDisplay().SendRequest(p, 6, seat, serial, parent, x, y, flags)
+func (p *ShellSurface) SetPopup(seat *Seat, serial uint32, parent *Surface, x int32, y int32, flags uint32) error {
+	return p.Connection().SendRequest(p, 6, seat, serial, parent, x, y, flags)
 }
 
-func (p *ShellSurface) SetMaximized(output Output) error {
-	return Proxy(p).GetDisplay().SendRequest(p, 7, output)
+func (p *ShellSurface) SetMaximized(output *Output) error {
+	return p.Connection().SendRequest(p, 7, output)
 }
 
 func (p *ShellSurface) SetTitle(title string) error {
-	return Proxy(p).GetDisplay().SendRequest(p, 8, title)
+	return p.Connection().SendRequest(p, 8, title)
 }
 
 func (p *ShellSurface) SetClass(class string) error {
-	return Proxy(p).GetDisplay().SendRequest(p, 9, class)
+	return p.Connection().SendRequest(p, 9, class)
+}
+
+type SurfaceEnterEvent struct {
+	Output *Output
+}
+
+type SurfaceLeaveEvent struct {
+	Output *Output
 }
 
 type Surface struct {
 	BaseProxy
-	EnterChan chan<- Output
-	LeaveChan chan<- Output
+	EnterChan chan SurfaceEnterEvent
+	LeaveChan chan SurfaceLeaveEvent
+}
+
+func NewSurface(c *Connection) *Surface {
+	ret := &Surface{}
+	ret.EnterChan = make(chan SurfaceEnterEvent, 0)
+	ret.LeaveChan = make(chan SurfaceLeaveEvent, 0)
+	c.Register(ret)
+	return ret
 }
 
 func (p *Surface) Destroy() error {
-	return Proxy(p).GetDisplay().SendRequest(p, 0)
+	return p.Connection().SendRequest(p, 0)
 }
 
-func (p *Surface) Attach(buffer Buffer, x int, y int) error {
-	return Proxy(p).GetDisplay().SendRequest(p, 1, buffer, x, y)
+func (p *Surface) Attach(buffer *Buffer, x int32, y int32) error {
+	return p.Connection().SendRequest(p, 1, buffer, x, y)
 }
 
-func (p *Surface) Damage(x int, y int, width int, height int) error {
-	return Proxy(p).GetDisplay().SendRequest(p, 2, x, y, width, height)
+func (p *Surface) Damage(x int32, y int32, width int32, height int32) error {
+	return p.Connection().SendRequest(p, 2, x, y, width, height)
 }
 
 func (p *Surface) Frame() (*Callback, error) {
-	ret := Callback{}
-	Proxy(p).GetDisplay().Register(&ret)
-	return &ret, Proxy(p).GetDisplay().SendRequest(p, 3)
+	ret := NewCallback(p.Connection())
+	return ret, p.Connection().SendRequest(p, 3, Proxy(ret))
 }
 
-func (p *Surface) SetOpaqueRegion(region Region) error {
-	return Proxy(p).GetDisplay().SendRequest(p, 4, region)
+func (p *Surface) SetOpaqueRegion(region *Region) error {
+	return p.Connection().SendRequest(p, 4, region)
 }
 
-func (p *Surface) SetInputRegion(region Region) error {
-	return Proxy(p).GetDisplay().SendRequest(p, 5, region)
+func (p *Surface) SetInputRegion(region *Region) error {
+	return p.Connection().SendRequest(p, 5, region)
 }
 
 func (p *Surface) Commit() error {
-	return Proxy(p).GetDisplay().SendRequest(p, 6)
+	return p.Connection().SendRequest(p, 6)
 }
 
-func (p *Surface) SetBufferTransform(transform int) error {
-	return Proxy(p).GetDisplay().SendRequest(p, 7, transform)
+func (p *Surface) SetBufferTransform(transform int32) error {
+	return p.Connection().SendRequest(p, 7, transform)
 }
 
-func (p *Surface) SetBufferScale(scale int) error {
-	return Proxy(p).GetDisplay().SendRequest(p, 8, scale)
+func (p *Surface) SetBufferScale(scale int32) error {
+	return p.Connection().SendRequest(p, 8, scale)
+}
+
+type SeatCapabilitiesEvent struct {
+	Capabilities uint32
+}
+
+type SeatNameEvent struct {
+	Name string
 }
 
 type Seat struct {
 	BaseProxy
-	CapabilitiesChan chan<- uint32
-	NameChan         chan<- string
+	CapabilitiesChan chan SeatCapabilitiesEvent
+	NameChan         chan SeatNameEvent
+}
+
+func NewSeat(c *Connection) *Seat {
+	ret := &Seat{}
+	ret.CapabilitiesChan = make(chan SeatCapabilitiesEvent, 0)
+	ret.NameChan = make(chan SeatNameEvent, 0)
+	c.Register(ret)
+	return ret
 }
 
 func (p *Seat) GetPointer() (*Pointer, error) {
-	ret := Pointer{}
-	Proxy(p).GetDisplay().Register(&ret)
-	return &ret, Proxy(p).GetDisplay().SendRequest(p, 0)
+	ret := NewPointer(p.Connection())
+	return ret, p.Connection().SendRequest(p, 0, Proxy(ret))
 }
 
 func (p *Seat) GetKeyboard() (*Keyboard, error) {
-	ret := Keyboard{}
-	Proxy(p).GetDisplay().Register(&ret)
-	return &ret, Proxy(p).GetDisplay().SendRequest(p, 1)
+	ret := NewKeyboard(p.Connection())
+	return ret, p.Connection().SendRequest(p, 1, Proxy(ret))
 }
 
 func (p *Seat) GetTouch() (*Touch, error) {
-	ret := Touch{}
-	Proxy(p).GetDisplay().Register(&ret)
-	return &ret, Proxy(p).GetDisplay().SendRequest(p, 2)
+	ret := NewTouch(p.Connection())
+	return ret, p.Connection().SendRequest(p, 2, Proxy(ret))
 }
 
 type PointerEnterEvent struct {
 	Serial   uint32
-	Surface  Surface
+	Surface  *Surface
 	SurfaceX float32
 	SurfaceY float32
 }
 
 type PointerLeaveEvent struct {
 	Serial  uint32
-	Surface Surface
+	Surface *Surface
 }
 
 type PointerMotionEvent struct {
@@ -546,36 +694,47 @@ type PointerAxisEvent struct {
 
 type Pointer struct {
 	BaseProxy
-	EnterChan  chan<- PointerEnterEvent
-	LeaveChan  chan<- PointerLeaveEvent
-	MotionChan chan<- PointerMotionEvent
-	ButtonChan chan<- PointerButtonEvent
-	AxisChan   chan<- PointerAxisEvent
+	EnterChan  chan PointerEnterEvent
+	LeaveChan  chan PointerLeaveEvent
+	MotionChan chan PointerMotionEvent
+	ButtonChan chan PointerButtonEvent
+	AxisChan   chan PointerAxisEvent
 }
 
-func (p *Pointer) SetCursor(serial uint32, surface Surface, hotspotX int, hotspotY int) error {
-	return Proxy(p).GetDisplay().SendRequest(p, 0, serial, surface, hotspotX, hotspotY)
+func NewPointer(c *Connection) *Pointer {
+	ret := &Pointer{}
+	ret.EnterChan = make(chan PointerEnterEvent, 0)
+	ret.LeaveChan = make(chan PointerLeaveEvent, 0)
+	ret.MotionChan = make(chan PointerMotionEvent, 0)
+	ret.ButtonChan = make(chan PointerButtonEvent, 0)
+	ret.AxisChan = make(chan PointerAxisEvent, 0)
+	c.Register(ret)
+	return ret
+}
+
+func (p *Pointer) SetCursor(serial uint32, surface *Surface, hotspotX int32, hotspotY int32) error {
+	return p.Connection().SendRequest(p, 0, serial, surface, hotspotX, hotspotY)
 }
 
 func (p *Pointer) Release() error {
-	return Proxy(p).GetDisplay().SendRequest(p, 1)
+	return p.Connection().SendRequest(p, 1)
 }
 
 type KeyboardKeymapEvent struct {
 	Format uint32
-	Fd     *os.File
+	Fd     uintptr
 	Size   uint32
 }
 
 type KeyboardEnterEvent struct {
 	Serial  uint32
-	Surface Surface
-	Keys    []int
+	Surface *Surface
+	Keys    []int32
 }
 
 type KeyboardLeaveEvent struct {
 	Serial  uint32
-	Surface Surface
+	Surface *Surface
 }
 
 type KeyboardKeyEvent struct {
@@ -594,29 +753,41 @@ type KeyboardModifiersEvent struct {
 }
 
 type KeyboardRepeatInfoEvent struct {
-	Rate  int
-	Delay int
+	Rate  int32
+	Delay int32
 }
 
 type Keyboard struct {
 	BaseProxy
-	KeymapChan     chan<- KeyboardKeymapEvent
-	EnterChan      chan<- KeyboardEnterEvent
-	LeaveChan      chan<- KeyboardLeaveEvent
-	KeyChan        chan<- KeyboardKeyEvent
-	ModifiersChan  chan<- KeyboardModifiersEvent
-	RepeatInfoChan chan<- KeyboardRepeatInfoEvent
+	KeymapChan     chan KeyboardKeymapEvent
+	EnterChan      chan KeyboardEnterEvent
+	LeaveChan      chan KeyboardLeaveEvent
+	KeyChan        chan KeyboardKeyEvent
+	ModifiersChan  chan KeyboardModifiersEvent
+	RepeatInfoChan chan KeyboardRepeatInfoEvent
+}
+
+func NewKeyboard(c *Connection) *Keyboard {
+	ret := &Keyboard{}
+	ret.KeymapChan = make(chan KeyboardKeymapEvent, 0)
+	ret.EnterChan = make(chan KeyboardEnterEvent, 0)
+	ret.LeaveChan = make(chan KeyboardLeaveEvent, 0)
+	ret.KeyChan = make(chan KeyboardKeyEvent, 0)
+	ret.ModifiersChan = make(chan KeyboardModifiersEvent, 0)
+	ret.RepeatInfoChan = make(chan KeyboardRepeatInfoEvent, 0)
+	c.Register(ret)
+	return ret
 }
 
 func (p *Keyboard) Release() error {
-	return Proxy(p).GetDisplay().SendRequest(p, 0)
+	return p.Connection().SendRequest(p, 0)
 }
 
 type TouchDownEvent struct {
 	Serial  uint32
 	Time    uint32
-	Surface Surface
-	Id      int
+	Surface *Surface
+	Id      int32
 	X       float32
 	Y       float32
 }
@@ -624,12 +795,12 @@ type TouchDownEvent struct {
 type TouchUpEvent struct {
 	Serial uint32
 	Time   uint32
-	Id     int
+	Id     int32
 }
 
 type TouchMotionEvent struct {
 	Time uint32
-	Id   int
+	Id   int32
 	X    float32
 	Y    float32
 }
@@ -642,100 +813,142 @@ type TouchCancelEvent struct {
 
 type Touch struct {
 	BaseProxy
-	DownChan   chan<- TouchDownEvent
-	UpChan     chan<- TouchUpEvent
-	MotionChan chan<- TouchMotionEvent
-	FrameChan  chan<- TouchFrameEvent
-	CancelChan chan<- TouchCancelEvent
+	DownChan   chan TouchDownEvent
+	UpChan     chan TouchUpEvent
+	MotionChan chan TouchMotionEvent
+	FrameChan  chan TouchFrameEvent
+	CancelChan chan TouchCancelEvent
+}
+
+func NewTouch(c *Connection) *Touch {
+	ret := &Touch{}
+	ret.DownChan = make(chan TouchDownEvent, 0)
+	ret.UpChan = make(chan TouchUpEvent, 0)
+	ret.MotionChan = make(chan TouchMotionEvent, 0)
+	ret.FrameChan = make(chan TouchFrameEvent, 0)
+	ret.CancelChan = make(chan TouchCancelEvent, 0)
+	c.Register(ret)
+	return ret
 }
 
 func (p *Touch) Release() error {
-	return Proxy(p).GetDisplay().SendRequest(p, 0)
+	return p.Connection().SendRequest(p, 0)
 }
 
 type OutputGeometryEvent struct {
-	X              int
-	Y              int
-	PhysicalWidth  int
-	PhysicalHeight int
-	Subpixel       int
+	X              int32
+	Y              int32
+	PhysicalWidth  int32
+	PhysicalHeight int32
+	Subpixel       int32
 	Make           string
 	Model          string
-	Transform      int
+	Transform      int32
 }
 
 type OutputModeEvent struct {
 	Flags   uint32
-	Width   int
-	Height  int
-	Refresh int
+	Width   int32
+	Height  int32
+	Refresh int32
 }
 
 type OutputDoneEvent struct {
 }
 
+type OutputScaleEvent struct {
+	Factor int32
+}
+
 type Output struct {
 	BaseProxy
-	GeometryChan chan<- OutputGeometryEvent
-	ModeChan     chan<- OutputModeEvent
-	DoneChan     chan<- OutputDoneEvent
-	ScaleChan    chan<- int
+	GeometryChan chan OutputGeometryEvent
+	ModeChan     chan OutputModeEvent
+	DoneChan     chan OutputDoneEvent
+	ScaleChan    chan OutputScaleEvent
+}
+
+func NewOutput(c *Connection) *Output {
+	ret := &Output{}
+	ret.GeometryChan = make(chan OutputGeometryEvent, 0)
+	ret.ModeChan = make(chan OutputModeEvent, 0)
+	ret.DoneChan = make(chan OutputDoneEvent, 0)
+	ret.ScaleChan = make(chan OutputScaleEvent, 0)
+	c.Register(ret)
+	return ret
 }
 
 type Region struct {
 	BaseProxy
 }
 
+func NewRegion(c *Connection) *Region {
+	ret := &Region{}
+	c.Register(ret)
+	return ret
+}
+
 func (p *Region) Destroy() error {
-	return Proxy(p).GetDisplay().SendRequest(p, 0)
+	return p.Connection().SendRequest(p, 0)
 }
 
-func (p *Region) Add(x int, y int, width int, height int) error {
-	return Proxy(p).GetDisplay().SendRequest(p, 1, x, y, width, height)
+func (p *Region) Add(x int32, y int32, width int32, height int32) error {
+	return p.Connection().SendRequest(p, 1, x, y, width, height)
 }
 
-func (p *Region) Subtract(x int, y int, width int, height int) error {
-	return Proxy(p).GetDisplay().SendRequest(p, 2, x, y, width, height)
+func (p *Region) Subtract(x int32, y int32, width int32, height int32) error {
+	return p.Connection().SendRequest(p, 2, x, y, width, height)
 }
 
 type Subcompositor struct {
 	BaseProxy
 }
 
-func (p *Subcompositor) Destroy() error {
-	return Proxy(p).GetDisplay().SendRequest(p, 0)
+func NewSubcompositor(c *Connection) *Subcompositor {
+	ret := &Subcompositor{}
+	c.Register(ret)
+	return ret
 }
 
-func (p *Subcompositor) GetSubsurface(surface Surface, parent Surface) (*Subsurface, error) {
-	ret := Subsurface{}
-	Proxy(p).GetDisplay().Register(&ret)
-	return &ret, Proxy(p).GetDisplay().SendRequest(p, 1, surface, parent)
+func (p *Subcompositor) Destroy() error {
+	return p.Connection().SendRequest(p, 0)
+}
+
+func (p *Subcompositor) GetSubsurface(surface *Surface, parent *Surface) (*Subsurface, error) {
+	ret := NewSubsurface(p.Connection())
+	return ret, p.Connection().SendRequest(p, 1, Proxy(ret), surface, parent)
 }
 
 type Subsurface struct {
 	BaseProxy
 }
 
+func NewSubsurface(c *Connection) *Subsurface {
+	ret := &Subsurface{}
+	c.Register(ret)
+	return ret
+}
+
 func (p *Subsurface) Destroy() error {
-	return Proxy(p).GetDisplay().SendRequest(p, 0)
+	return p.Connection().SendRequest(p, 0)
 }
 
-func (p *Subsurface) SetPosition(x int, y int) error {
-	return Proxy(p).GetDisplay().SendRequest(p, 1, x, y)
+func (p *Subsurface) SetPosition(x int32, y int32) error {
+	return p.Connection().SendRequest(p, 1, x, y)
 }
 
-func (p *Subsurface) PlaceAbove(sibling Surface) error {
-	return Proxy(p).GetDisplay().SendRequest(p, 2, sibling)
+func (p *Subsurface) PlaceAbove(sibling *Surface) error {
+	return p.Connection().SendRequest(p, 2, sibling)
 }
 
-func (p *Subsurface) PlaceBelow(sibling Surface) error {
-	return Proxy(p).GetDisplay().SendRequest(p, 3, sibling)
+func (p *Subsurface) PlaceBelow(sibling *Surface) error {
+	return p.Connection().SendRequest(p, 3, sibling)
 }
 
 func (p *Subsurface) SetSync() error {
-	return Proxy(p).GetDisplay().SendRequest(p, 4)
+	return p.Connection().SendRequest(p, 4)
 }
 
 func (p *Subsurface) SetDesync() error {
-	return Proxy(p).GetDisplay().SendRequest(p, 5)
+	return p.Connection().SendRequest(p, 5)
 }

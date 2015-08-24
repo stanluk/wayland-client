@@ -3,19 +3,18 @@ package wayland
 type ProxyId uint32
 
 type Proxy interface {
-	GetDisplay() *Display
-	SetDisplay(*Display)
+	Connection() *Connection
+	SetConnection(c *Connection)
+	Id() ProxyId
 	SetId(id ProxyId)
-	GetId() ProxyId
-	DispatchEvent(m *Message) error
 }
 
 type BaseProxy struct {
-	id      ProxyId
-	display *Display
+	id   ProxyId
+	conn *Connection
 }
 
-func (p *BaseProxy) GetId() ProxyId {
+func (p *BaseProxy) Id() ProxyId {
 	return p.id
 }
 
@@ -23,14 +22,10 @@ func (p *BaseProxy) SetId(id ProxyId) {
 	p.id = id
 }
 
-func (p *BaseProxy) GetDisplay() *Display {
-	return p.display
+func (p *BaseProxy) Connection() *Connection {
+	return p.conn
 }
 
-func (p *BaseProxy) SetDisplay(d *Display) {
-	p.display = d
-}
-
-func (p *BaseProxy) DispatchEvent(m *Message) error {
-	return nil
+func (p *BaseProxy) SetConnection(c *Connection) {
+	p.conn = c
 }

@@ -4,45 +4,58 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"net"
-	"os"
 	"strings"
 	"syscall"
 )
 
 type Message struct {
-	Id      ProxyId
-	Opcode  uint32
-	size    uint32
-	data    *bytes.Buffer
-	control *bytes.Buffer
+	Id           ProxyId
+	Opcode       uint32
+	size         uint32
+	data         *bytes.Buffer
+	control      *bytes.Buffer
+	control_msgs []syscall.SocketControlMessage
 }
 
 func ReadWaylandMessage(conn *net.UnixConn) (*Message, error) {
 	var buf [8]byte
 	msg := Message{}
+	control := make([]byte, 24)
 
-	n, err := conn.Read(buf[:])
+	n, oobn, _, _, err := conn.ReadMsgUnix(buf[:], control)
 	if err != nil {
 		return nil, err
 	}
-	if n == 0 {
-		return nil, errors.New("Zero bytes read.")
+	if n != 8 {
+		return nil, errors.New("Unable to read message header.")
 	}
+	if oobn > 0 {
+		if oobn > len(control) {
+			panic("Unsufficient control msg buffer")
+		}
+		msg.control_msgs, err = syscall.ParseSocketControlMessage(control)
+		if err != nil {
+			panic(fmt.Sprintf("Control message parse error: %s", err.Error()))
+		}
+	}
+
 	msg.Id = ProxyId(binary.LittleEndian.Uint32(buf[0:4]))
 	msg.Opcode = uint32(binary.LittleEndian.Uint16(buf[4:6]))
 	msg.size = uint32(binary.LittleEndian.Uint16(buf[6:8]))
 
 	// subtract 8 bytes from header
 	data := make([]byte, msg.size-8)
-	control := make([]byte, 0)
 
-	n, _, _, _, _ = conn.ReadMsgUnix(data, control)
+	n, err = conn.Read(data)
+	if err != nil {
+		return nil, err
+	}
 	if n != int(msg.size)-8 {
 		return nil, errors.New("Invalid message size.")
 	}
 	msg.data = bytes.NewBuffer(data)
-	msg.control = bytes.NewBuffer(control)
 
 	return &msg, nil
 }
@@ -50,14 +63,15 @@ func ReadWaylandMessage(conn *net.UnixConn) (*Message, error) {
 func (m *Message) Write(arg interface{}) error {
 	switch t := arg.(type) {
 	case Proxy:
-		return binary.Write(m.data, binary.LittleEndian, t.GetId())
-	case uint32, float32:
-		return binary.Write(m.data, binary.LittleEndian, arg)
-	case int:
-		return binary.Write(m.data, binary.LittleEndian, uint32(t))
+		return binary.Write(m.data, binary.LittleEndian, uint32(t.Id()))
+	case uint32, int32:
+		return binary.Write(m.data, binary.LittleEndian, t)
+	case float32:
+		f := float64ToFixed(float64(t))
+		return binary.Write(m.data, binary.LittleEndian, f)
 	case string:
 		str, _ := arg.(string)
-		tail := 4 - (len(str)&0x3)&0x3
+		tail := 4 - (len(str) & 0x3)
 		err := binary.Write(m.data, binary.LittleEndian, uint32(len(str)+tail))
 		if err != nil {
 			return err
@@ -68,8 +82,8 @@ func (m *Message) Write(arg interface{}) error {
 		}
 		padding := make([]byte, tail)
 		return binary.Write(m.data, binary.LittleEndian, padding)
-	case *os.File:
-		rights := syscall.UnixRights(int(t.Fd()))
+	case uintptr:
+		rights := syscall.UnixRights(int(t))
 		return binary.Write(m.control, binary.LittleEndian, rights)
 	default:
 		panic("Invalid Wayland request parameter type.")
@@ -77,75 +91,94 @@ func (m *Message) Write(arg interface{}) error {
 	return nil
 }
 
-func (m *Message) GetProxy(d *Display) (Proxy, error) {
+func (m *Message) GetProxy(c *Connection) Proxy {
 	buf := m.data.Next(4)
 	if len(buf) != 4 {
-		return nil, errors.New("Unable to read object id")
+		panic("Unable to read object id")
 	}
-	id := ProxyId(binary.LittleEndian.Uint32(buf))
-	return d.context.objects[id], nil
+	return c.objects[ProxyId(binary.LittleEndian.Uint32(buf))]
 }
 
-func (m *Message) GetString() (string, error) {
+func (m *Message) GetFD() uintptr {
+	if m.control_msgs == nil {
+		return 0
+	}
+	fds, err := syscall.ParseUnixRights(&m.control_msgs[0])
+	if err != nil {
+		panic("Unable to parse unix rights")
+	}
+	m.control_msgs = append(m.control_msgs[0:], m.control_msgs[1:]...)
+	if len(fds) != 1 {
+		panic("Expected 1 file descriptor, got more")
+	}
+	return uintptr(fds[0])
+}
+
+func (m *Message) GetString() string {
 	buf := m.data.Next(4)
 	if len(buf) != 4 {
-		return "", errors.New("Unable to read string length")
+		panic("Unable to read string length")
 	}
 	l := int(binary.LittleEndian.Uint32(buf))
 	buf = m.data.Next(l)
 	if len(buf) != l {
-		return "", errors.New("Unable to read string")
+		panic("Unable to read string")
 	}
-	return strings.TrimRight(string(buf), "\x00"), nil
+	ret := strings.TrimRight(string(buf), "\x00")
+	//padding to 32 bit boundary
+	if (l & 0x3) != 0 {
+		buf = m.data.Next(4 - (l & 0x3))
+	}
+	return ret
 }
 
-func (m *Message) GetInt32() (int32, error) {
+func (m *Message) GetInt32() int32 {
 	buf := m.data.Next(4)
 	if len(buf) != 4 {
-		return 0, errors.New("Unable to read int")
+		panic("Unable to read int")
 	}
-	return int32(binary.LittleEndian.Uint32(buf)), nil
+	return int32(binary.LittleEndian.Uint32(buf))
 }
 
-func (m *Message) GetUint32() (uint32, error) {
+func (m *Message) GetUint32() uint32 {
 	buf := m.data.Next(4)
 	if len(buf) != 4 {
-		return 0, errors.New("Unable to read unsigned int")
+		panic("Unable to read unsigned int")
 	}
-	return binary.LittleEndian.Uint32(buf), nil
+	return binary.LittleEndian.Uint32(buf)
 }
 
-func (m *Message) GetFloat32() (float32, error) {
+func (m *Message) GetFloat32() float32 {
 	buf := m.data.Next(4)
 	if len(buf) != 4 {
-		return 0, errors.New("Unable to read fixed")
+		panic("Unable to read fixed")
 	}
-	return float32(fixedToFloat64(int32(binary.LittleEndian.Uint32(buf)))), nil
+	return float32(fixedToFloat64(int32(binary.LittleEndian.Uint32(buf))))
 }
 
-func (m *Message) GetArray() ([]uint32, error) {
+func (m *Message) GetArray() []int32 {
 	buf := m.data.Next(4)
 	if len(buf) != 4 {
-		return nil, errors.New("Unable to array len")
+		panic("Unable to array len")
 	}
 	l := binary.LittleEndian.Uint32(buf)
-	arr := make([]uint32, l/4)
+	arr := make([]int32, l/4)
 	for _, i := range arr {
 		buf = m.data.Next(4)
 		if len(buf) != 4 {
-			return nil, errors.New("Unable to array element")
+			panic("Unable to array element")
 		}
-		arr[i] = binary.LittleEndian.Uint32(buf)
+		arr[i] = int32(binary.LittleEndian.Uint32(buf))
 	}
-	return arr, nil
+	return arr
 }
 
-func NewWaylandRequest(p Proxy, opcode uint32) *Message {
+func NewRequest(p Proxy, opcode uint32) *Message {
 	msg := Message{}
 	msg.Opcode = opcode
-	msg.Id = p.GetId()
-	msg.data = bytes.NewBuffer(nil)
-	msg.control = bytes.NewBuffer(nil)
+	msg.Id = p.Id()
+	msg.data = &bytes.Buffer{}
+	msg.control = &bytes.Buffer{}
 
 	return &msg
 }
@@ -158,11 +191,11 @@ func SendWaylandMessage(conn *net.UnixConn, m *Message) error {
 	binary.Write(header, binary.LittleEndian, m.size<<16|m.Opcode&0x0000ffff)
 
 	d, c, err := conn.WriteMsgUnix(append(header.Bytes(), m.data.Bytes()...), m.control.Bytes(), nil)
-	if c != m.control.Len() {
-		panic("Unable to write control message.")
+	if err != nil {
+		panic(err.Error())
 	}
-	if d != (header.Len() + m.data.Len()) {
-		panic("Unable to write message data.")
+	if c != m.control.Len() || d != (header.Len()+m.data.Len()) {
+		panic("WriteMsgUnix failed.")
 	}
 	return err
 }

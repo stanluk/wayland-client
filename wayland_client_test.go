@@ -8,20 +8,12 @@ import (
 	"time"
 )
 
-func TestDisconnection(t *testing.T) {
+func TestConnectionDisconnection(t *testing.T) {
 	d, err := ConnectDisplay("")
 	if err != nil {
 		t.Errorf("Failed to connect to wayland server")
 	}
-	go d.Listen()
-	select {
-	case wlerror := <-d.ErrorChan:
-		t.Logf("Error: obj: %d, err_code: %d, msg: %s", id, code, m)
-		t.Fail()
-	case <-time.After(5 * time.Second):
-		t.Logf("Timeout passed...")
-	}
-	err = d.Close()
+	d.Connection().Close()
 	if err != nil {
 		t.Errorf("Disconnecing wayland server failed")
 	}
@@ -36,18 +28,22 @@ func TestSync(t *testing.T) {
 	if err != nil {
 		t.Errorf("Sync request failed.")
 	}
-	go display.Listen()
-	select {
-	case wlerror := <-display.ErrorChan:
-		t.Logf("Error: obj: %d, err_code: %d, msg: %s", id, code, m)
-		t.Fail()
-	case done := <-callback.DoneChan:
-		t.Logf("Done callback")
-	case <-time.After(100 * time.Millisecond):
-		t.Logf("Timeout passed...")
-		t.Fail()
+loop:
+	for {
+		select {
+		case dee := <-display.ErrorChan:
+			t.Log("Error: obj: %d, err_code: %d, msg: %s", dee.ObjectId.Id(), dee.Code, dee.Message)
+			t.Fail()
+			break loop
+		case <-callback.DoneChan:
+			break loop
+		case <-time.After(1000 * time.Millisecond):
+			t.Fail()
+			break loop
+		case display.Connection().Dispatch() <- true:
+		}
 	}
-	display.Close()
+	display.Connection().Close()
 }
 
 func TestGetRegistry(t *testing.T) {
@@ -55,99 +51,45 @@ func TestGetRegistry(t *testing.T) {
 	if err != nil {
 		t.Errorf("Failed to connect to wayland server")
 	}
+	var has_global bool = false
 	registry, err := display.GetRegistry()
 	if err != nil {
 		t.Errorf("Disconnecing wayland server failed")
 	}
-	go d.Listen()
-	select {
-	case wlerror := <-display.ErrorChan:
-		t.Logf("Error: obj: %d, err_code: %d, msg: %s", id, code, m)
-		t.Fail()
-	case done := <-registry.GlobalChan:
-		t.Logf("Global chan")
-	case <-time.After(100 * time.Millisecond):
-		t.Logf("Timeout passed...")
-		t.Fail()
-	}
-	display.Close()
-}
-
-func BenchmarkRegistrySync(t *testing.B) {
-	display, err := ConnectDisplay("")
-	if err != nil {
-		t.Errorf("Failed to connect to wayland server")
-		t.FailNow()
-	}
-	go display.Listen()
-	for i := 0; i < t.N; i++ {
-		callback, err := display.Sync()
-		if err != nil {
-			t.Errorf("Unable to send Sync() request.")
-		}
-		<-callback.DoneChan
-	}
-	display.Close()
-}
-
-func TestGetPointer(t *testing.T) {
-	display, err := ConnectDisplay("")
-	var pointer Pointer
-	if err != nil {
-		t.FailNow()
-	}
-	registry, err := display.GetRegistry()
-	if err != nil {
-		t.FailNow()
-	}
+loop:
 	for {
 		select {
-		case <-display.ErrorChan:
-			t.FailNow()
-		case ev := <-registry.GlobalChan:
-			if ev.ifc == "wl_seat" {
-				seat := NewSeat(reg)
-				err = registry.Bind(name, ifc, version, seat)
-				if err != nil {
-					t.FailNow()
-				}
-				pointer, err = seat.GetPointer()
-				if err != nil {
-					t.FailNow()
-				}
-				break
-			}
+		case dee := <-display.ErrorChan:
+			t.Logf("Error: obj: %d, err_code: %d, msg: %s", dee.ObjectId.Id(), dee.Code, dee.Message)
+			t.Fail()
+		case ge := <-registry.GlobalChan:
+			t.Logf("Global obj %s %d %d", ge.Ifc, ge.Name, ge.Version)
+			has_global = true
+		case <-time.After(100 * time.Millisecond):
+			break loop
+		case display.Connection().Dispatch() <- true:
 		}
 	}
-
-	if pointer == nil {
-		t.FailNow()
+	display.Connection().Close()
+	if !has_global {
+		t.Fail()
 	}
-
-	for {
-		select {
-		case <-pointer.MotionChan:
-			t.Logf("Mouse position ")
-		case <-time.After(2000 * time.Millisecond):
-			break
-		}
-	}
-	display.Close()
 }
 
 func ExamplePaint() {
 	var (
-		shm        Shm
-		compositor Compositor
-		surface    Surface
+		shm        *Shm
+		compositor *Compositor
+		surface    *Surface
 		data       []byte
-		buf        Buffer
-		shell      Shell
-		pointer    Pointer
-		seat       Seat
-		width      int  = 640
-		height     int  = 480
-		pressed    bool = false
+		buf        *Buffer
+		shell      *Shell
+		pointer    *Pointer
+		seat       *Seat
+		keyboard   *Keyboard
+		width      int32 = 640
+		height     int32 = 480
+		pressed    bool  = false
 	)
 	stride := width * 4
 	size := stride * height
@@ -166,63 +108,74 @@ func ExamplePaint() {
 	if err != nil {
 		panic("Disconnecing wayland server failed")
 	}
-	callback, err := registry.Sync()
+	callback, err := display.Sync()
 	if err != nil {
 		panic("Sync request failed")
 	}
 
+loop:
 	for {
 		select {
-		case ev <- registry.GlobalChan:
-			if ev.ifc == "wl_shm" {
-				shm = NewShm(&reg.Proxy)
-				err = reg.Bind(name, ifc, version, shm.Id)
+		case ev := <-registry.GlobalChan:
+			if ev.Ifc == "wl_shm" {
+				shm = NewShm(display.Connection())
+				err = registry.Bind(ev.Name, ev.Ifc, ev.Version, shm)
 				if err != nil {
 					panic("unable to bind Shm object")
 				}
 			}
-			if ev.ifc == "wl_compositor" {
-				compositor = NewCompositor(&reg.Proxy)
-				err = reg.Bind(name, ifc, version, compositor.Id)
+			if ev.Ifc == "wl_compositor" {
+				compositor = NewCompositor(display.Connection())
+				err = registry.Bind(ev.Name, ev.Ifc, ev.Version, compositor)
 				if err != nil {
 					panic("unable to bind Compositor object")
 				}
 			}
-			if ev.ifc == "wl_shell" {
-				shell = NewShell(&reg.Proxy)
-				err = reg.Bind(name, ifc, version, shell.Id)
+			if ev.Ifc == "wl_shell" {
+				shell = NewShell(display.Connection())
+				err = registry.Bind(ev.Name, ev.Ifc, ev.Version, shell)
 				if err != nil {
 					panic("unable to bind shell object")
 				}
 			}
-			if ev.ifc == "wl_seat" {
-				seat = NewSeat(&reg.Proxy)
-				err = reg.Bind(name, ifc, version, seat.Id)
+			if ev.Ifc == "wl_seat" {
+				seat = NewSeat(display.Connection())
+				err = registry.Bind(ev.Name, ev.Ifc, ev.Version, seat)
 				if err != nil {
 					panic("unable to bind seat object")
 				}
 			}
 		case <-callback.DoneChan:
-			break
+			break loop
+		case display.Connection().Dispatch() <- true:
 		}
 	}
 
 	// query seat capabilities
-	callback, err := registry.Sync()
+	callback, err = display.Sync()
 	if err != nil {
 		panic("Sync request failed")
 	}
+loop2:
 	for {
 		select {
-		case ev <- seat.CapabilitiesChan:
-			if (ev.caps & WlSeatCapabilityPointer) != 0 {
+		case <-shm.FormatChan:
+		case <-display.DeleteIdChan:
+		case ev := <-seat.CapabilitiesChan:
+			if (ev.Capabilities & SeatCapabilityPointer) != 0 {
 				pointer, err = seat.GetPointer()
 				if err != nil {
 					panic("unable to get pointer object")
 				}
+				keyboard, err = seat.GetKeyboard()
+				if err != nil {
+					panic("unable to get keyboard object")
+				}
 			}
+		case <-seat.NameChan:
 		case <-callback.DoneChan:
-			break
+			break loop2
+		case display.Connection().Dispatch() <- true:
 		}
 	}
 	// if we don't have a pointer - just exit program
@@ -235,18 +188,18 @@ func ExamplePaint() {
 	}
 
 	// create shm buffer
-	file, err := CreateAnonymousFile(size)
+	file, err := CreateAnonymousFile(int(size))
 	if err != nil {
 		panic("Unable to create file")
 	}
-	data, err = syscall.Mmap(int(file.Fd()), 0, size, syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
+	data, err = syscall.Mmap(int(file.Fd()), 0, int(size), syscall.PROT_READ|syscall.PROT_WRITE, syscall.MAP_SHARED)
 	if err != nil {
 		panic("Unable to mmap file")
 	}
 	for i, _ := range data {
 		data[i] = 255
 	}
-	pool, err := shm.CreatePool(file, size)
+	pool, err := shm.CreatePool(file.Fd(), size)
 	if err != nil {
 		panic(fmt.Sprintf("Unable to create pool: %s", err))
 	}
@@ -273,19 +226,23 @@ func ExamplePaint() {
 		panic("Unable to commit surface")
 	}
 
-	// start main loop
-	go d.Listen()
-
-	// main application controller
+	// main application loop
+main_loop:
 	for {
 		select {
-		case ev := <-shsurg.PingChan:
-			shsurf.Pong(ev.serial)
+		case <-display.DeleteIdChan:
+		case <-seat.NameChan:
+		case <-seat.CapabilitiesChan:
+		case <-buf.ReleaseChan:
+		case <-pointer.EnterChan:
+		case <-pointer.LeaveChan:
+		case ev := <-shsurf.PingChan:
+			shsurf.Pong(ev.Serial)
 		case ev := <-pointer.MotionChan:
 			if pressed {
-				x1 := int(x)
-				y1 := int(y)
-				offsets := []int{0, 1, -1, 2, -2}
+				x1 := int32(ev.SurfaceX)
+				y1 := int32(ev.SurfaceY)
+				offsets := []int32{0, 1, -1, 2, -2}
 				for _, x := range offsets {
 					for _, y := range offsets {
 						dx := y1 + x
@@ -304,18 +261,29 @@ func ExamplePaint() {
 				}
 			}
 		case ev := <-pointer.ButtonChan:
-			if state == WlPointerButtonStatePressed {
+			log.Println("PointerButton: ", ev.Time, ev.Button, ev.State)
+			if ev.State == PointerButtonStatePressed {
 				pressed = true
 			}
-			if state == WlPointerButtonStateReleased {
+			if ev.State == PointerButtonStateReleased {
 				pressed = false
 			}
-			log.Println("PointerButton: ", time, butt, state)
-		case <-time.After(10000 * time.Millisecond):
-			break
+		case <-keyboard.EnterChan:
+		case <-keyboard.LeaveChan:
+		case <-keyboard.ModifiersChan:
+		case ev := <-keyboard.KeymapChan:
+			log.Println("KeyMapEvent", ev.Format, ev.Fd)
+		case <-keyboard.RepeatInfoChan:
+		case ev := <-keyboard.KeyChan:
+			log.Println("KeyEvent: ", ev.Key)
+			if ev.Key == 16 {
+				fmt.Println("OK")
+				break main_loop
+			}
+		case display.Connection().Dispatch() <- true:
 		}
 	}
 	// Output:
 	// OK
-	display.Close()
+	display.Connection().Close()
 }
